@@ -2,83 +2,84 @@
 
 ![Python](https://img.shields.io/badge/Python-3.11-blue.svg?logo=python&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker-ready-2496ED.svg?logo=docker&logoColor=white)
+![Flask](https://img.shields.io/badge/Flask-API-000000.svg?logo=flask&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
 
-Ein schlanker **One-Shot-Indexer**, der Dokumente aus [Paperless-ngx](https://docs.paperless-ngx.com/)
-in eine [Qdrant](https://qdrant.tech/)-Vektordatenbank überführt und damit **semantische Suche** und
-**RAG-Anwendungen** über dein Dokumentenarchiv ermöglicht. Statt eines dauerhaft laufenden Dienstes wird
-der Indexer **ereignisgesteuert** (per Webhook / Post-consumption-Script) gestartet, verarbeitet nur neue
-oder geänderte Dokumente und beendet sich anschließend wieder. Der komplette Zustand lebt in Qdrant – es
-gibt **keine externen State-Dateien**.
+Überführt Dokumente aus [Paperless-ngx](https://docs.paperless-ngx.com/) in eine
+[Qdrant](https://qdrant.tech/)-Vektordatenbank und ermöglicht damit **semantische Suche** und
+**RAG-Anwendungen** über dein Dokumentenarchiv. Das Projekt bietet **zwei Betriebsmodi**:
+
+- 🔄 **Indexer (One-Shot)** – wird ereignisgesteuert (Webhook / Post-consumption-Script) gestartet,
+  indexiert neue/geänderte Dokumente in Qdrant und beendet sich danach wieder. Kein Polling-Loop,
+  keine State-Dateien – der einzige Zustand lebt in Qdrant.
+- 🌐 **API (read-only HTTP-Service)** – ein schlanker Flask-Dienst, der semantische bzw. hybride
+  Suche und Dokument-Metadaten über eine REST-API bereitstellt. Kein Schreibzugriff, keine
+  LLM-Logik – liest ausschließlich aus der vom Indexer befüllten Collection.
+
+Beide Modi teilen sich die gemeinsamen Komponenten `config.py` (Konfiguration) und `clients.py`
+(Qdrant- und Embedding-Client), es gibt also keine Code-Duplizierung.
 
 ## Architektur-Übersicht
 
 ```
                           (1) Dokument aufgenommen
-   ┌───────────────┐        Webhook / Post-consume        ┌─────────────────────┐
-   │  Paperless-ngx │ ───────────────────────────────────▶ │  Vector-Indexer     │
-   │  (REST-API)    │ ◀─────────────────────────────────── │  (One-Shot Container)│
-   └───────────────┘   (2) Dokumente + Volltext abrufen    └─────────┬───────────┘
-                                                                      │
-                                              (3) Chunk → Embedding    │
-                                                                      ▼
-                                                            ┌─────────────────────┐
-                                                            │  Embedding-API      │
-                                                            │  (OpenAI-kompatibel) │
-                                                            │  Ollama / LocalAI    │
-                                                            └─────────┬───────────┘
-                                                                      │ (4) Vektor
-                                                                      ▼
-                                                            ┌─────────────────────┐
-                                                            │  Qdrant             │
-                                                            │  (Vektor-Datenbank)  │
-                                                            └─────────────────────┘
+                              Webhook / Post-consume
+   ┌───────────────┐                                     ┌──────────────────────┐        ┌──────────────────────┐
+   │  Paperless-ngx │ ──────────────────────────────────▶│  Indexer (One-Shot)   │ ─────▶ │  Embedding-API        │
+   │  (REST-API)    │      (2) Dokumente + Volltext        │  main.py              │        │  (OpenAI-kompatibel)   │
+   └───────────────┘                                     └──────────┬───────────┘        │  Ollama / LocalAI      │
+                                                                     │                    └───────────┬──────────┘
+                                                    (3) Chunk+Vektor  │                                │
+                                                                     ▼                                │ Vektor
+                                                          ┌──────────────────────┐ ◀─────────────────┘
+                                                          │  Qdrant               │
+                                                          │  (Vektor-Datenbank)   │
+                                                          └──────────┬───────────┘
+                                                                     ▲
+                                                    (Suche/Lesen)     │  ┌──────────────────────┐
+   ┌───────────────┐                                                 └──│  API (read-only)      │
+   │  HTTP-Client   │ ───────────────────────────────────────────────  │  api.py (Flask)       │ ──▶ Embedding-API
+   │  (curl / App)  │              /search, /document/{id}              └──────────────────────┘     (nur für Query-Embedding)
+   └───────────────┘
 ```
+
+**Indexer-Ablauf:**
 
 1. Paperless-ngx nimmt ein Dokument auf und stößt den Indexer an.
 2. Der Indexer ruft alle Dokumente samt Volltext paginiert über die REST-API ab.
-3. Neue/geänderte Dokumente werden in überlappende Chunks zerlegt und einzeln embeddet.
-4. Die Vektoren werden zusammen mit Metadaten als Points in Qdrant gespeichert.
-5. Am Ende jedes Laufs findet ein Abgleich statt: Alle Qdrant-IDs, die nicht mehr in Paperless existieren, werden gelöscht.
+3. Neue/geänderte Dokumente werden in überlappende Chunks zerlegt, embeddet und als Points mit
+   Metadaten in Qdrant gespeichert.
+4. Am Ende jedes Laufs findet ein Abgleich statt: Alle Qdrant-IDs, die nicht mehr in Paperless
+   existieren, werden gelöscht (Lösch-Synchronisation).
+
+**API-Ablauf:**
+
+- Ein HTTP-Client stellt eine Suchanfrage an `/search`. Die API embeddet die Query über die
+  Embedding-API und sucht in Qdrant (vector oder hybrid). Über `/document/{id}` lassen sich
+  Metadaten eines Dokuments abrufen.
 
 ## Features
 
-- 🚀 **One-Shot-Betrieb** – kein Polling-Loop, kein Dauerdienst; läuft, wenn er gebraucht wird.
+- 🚀 **One-Shot-Indexer** – kein Polling-Loop, kein Dauerdienst; läuft, wenn er gebraucht wird.
+- 🌐 **Read-only API-Mode** – Flask-Service mit `/health`, `/search`, `/document/{id}`.
 - 🔁 **Inkrementelle Indexierung** – Änderungserkennung per SHA-256-`content_hash`; unveränderte Dokumente werden übersprungen.
 - 🗑️ **Lösch-Synchronisation** – in Paperless gelöschte Dokumente werden automatisch aus Qdrant entfernt.
+- 🔎 **Vector- & Hybrid-Suche** – rein semantisch oder kombiniert mit Volltext-Filter.
+- 🔐 **API_KEY-Authentifizierung** – optionaler Schutz der Endpunkte per `X-API-Key`-Header.
 - ♻️ **Idempotent** – deterministische Point-IDs (`uuid5`), wiederholte Läufe erzeugen keine Duplikate.
 - ✂️ **Recursive Split Chunking (Absatz → Satz → Wort)** – Text wird hierarchisch an natürlichen Grenzen mit konfigurierbarer Überlappung geteilt.
 - 🔌 **OpenAI-kompatible Embeddings** – funktioniert mit Ollama, LocalAI, LM Studio & Co.
 - 🗂️ **Reichhaltige Metadaten** – Titel, Korrespondent, Dokumenttyp, Tags und Datumsangaben landen im Qdrant-Payload.
 - 🧠 **Zustandslos** – keine State-Dateien; der einzige Zustand ist der `content_hash` in Qdrant.
-- 🐳 **Docker-ready** – minimales Image, per `docker compose run` gestartet.
+- 🐳 **Docker-ready** – minimales Image, beide Modi über `docker compose`.
 - 💻 **CPU-only tauglich** – benötigt selbst keine GPU (Embeddings erledigt der externe Service).
-
-## Chunking-Algorithmus
-
-Der Indexer verwendet einen hierarchischen **Recursive-Split-Algorithmus** statt eines einfachen
-Fixed-Size-Chunkers. Der Text wird zunächst entlang der gröbsten natürlichen Grenze getrennt und
-fällt nur dann auf die nächstfeinere Ebene zurück, wenn ein Abschnitt weiterhin zu groß ist. Die
-Separator-Reihenfolge lautet:
-
-1. `\n\n` (Absatz)
-2. `\n` (Zeile)
-3. `. ` (Satz)
-4. ` ` (Wort)
-
-Für Normen, Weisungen und Verordnungen ist dies besser geeignet, da deren explizite
-Dokumentstruktur (Artikel, Absätze, Sätze) erhalten bleibt und semantische Einheiten nicht mitten
-im Satz zerschnitten werden.
-
-Die Chunk-Größe und die Überlappung sind über die Umgebungsvariablen `CHUNK_SIZE` und
-`CHUNK_OVERLAP` steuerbar.
 
 ## Voraussetzungen
 
 - **Paperless-ngx** mit erreichbarer REST-API und einem API-Token (Einstellungen → API-Token).
 - **Qdrant** (z. B. als Docker-Container `qdrant/qdrant`), erreichbar über HTTP.
 - **Ein OpenAI-kompatibler Embedding-Endpunkt** mit Route `POST /v1/embeddings`, z. B.:
-  - [Ollama](https://ollama.com/) (`/v1/embeddings`, z. B. Modell `nomic-embed-text`)
+  - [Ollama](https://ollama.com/) (z. B. Modell `nomic-embed-text`)
   - [LocalAI](https://localai.io/)
   - [LM Studio](https://lmstudio.ai/) oder jeder andere kompatible Dienst.
 - **Docker** & **Docker Compose**.
@@ -98,7 +99,7 @@ ausgeschlossen, da sie Secrets enthält):
 PAPERLESS_URL=http://paperless:8000
 PAPERLESS_TOKEN=dein_paperless_api_token
 
-# --- Embedding-Service (OpenAI-kompatibel) ---
+# --- Embedding-Service (OpenAI-kompatibel, Basis-URL ohne /v1/embeddings) ---
 EMBEDDING_URL=http://embedding:8080
 EMBEDDING_MODEL=nomic-embed-text
 VECTOR_SIZE=768
@@ -113,6 +114,13 @@ CHUNK_OVERLAP=150
 
 # --- Logging ---
 LOG_LEVEL=INFO
+
+# --- API-Mode (optional) ---
+API_ENABLED=true
+API_HOST=0.0.0.0
+API_PORT=8080
+API_KEY=dein_api_key
+SEARCH_MODE=vector
 ```
 
 Damit `docker compose` die Werte lädt, referenziere die Datei in der `docker-compose.yaml`
@@ -121,28 +129,171 @@ Damit `docker compose` die Werte lädt, referenziere die Datei in der `docker-co
 ### 2. Indexer einmalig ausführen
 
 ```bash
-# Image bauen und One-Shot-Lauf starten
-docker compose run --rm --env-file .env indexer
+docker compose run --rm indexer
 ```
 
 Der Container läuft genau einmal durch, verarbeitet alle neuen/geänderten Dokumente und beendet
 sich anschließend (`restart: "no"`). Wiederhole den Aufruf jederzeit – bereits indexierte,
 unveränderte Dokumente werden automatisch übersprungen.
 
+### 3. API starten (optional)
+
+```bash
+docker compose up -d api
+```
+
 ## Umgebungsvariablen
+
+### Indexer & gemeinsame Variablen
 
 | Variable            | Beschreibung                                                              | Default                                 |
 |---------------------|---------------------------------------------------------------------------|-----------------------------------------|
 | `PAPERLESS_URL`     | Basis-URL der Paperless-ngx-Instanz                                       | `http://paperless:8000`                 |
 | `PAPERLESS_TOKEN`   | API-Token aus Paperless (**erforderlich**, sonst Abbruch)                 | *(leer)*                                |
-| `EMBEDDING_URL`     | Basis-URL des OpenAI-kompatiblen Embedding-Dienstes (Pfad `/v1/embeddings` wird angehängt) | `http://embedding:8080`                 |
-| `EMBEDDING_MODEL`   | Modellname, wird im Request mitgeschickt (falls gesetzt)                  | *(leer)*                                |
+| `EMBEDDING_URL`     | Basis-URL des OpenAI-kompatiblen Embedding-Dienstes (Pfad `/v1/embeddings` wird angehängt) | `http://embedding:8080`   |
+| `EMBEDDING_MODEL`   | Modellname, wird im Embedding-Request mitgeschickt                        | *(leer)*                                |
 | `VECTOR_SIZE`       | Dimension der Embedding-Vektoren (muss zum Modell passen)                 | `1024`                                  |
 | `QDRANT_URL`        | Basis-URL der Qdrant-Instanz                                              | `http://qdrant:6333`                    |
 | `QDRANT_COLLECTION` | Name der Qdrant-Collection (wird bei Bedarf automatisch angelegt)         | `paperless`                             |
 | `CHUNK_SIZE`        | Maximale Chunk-Größe in Zeichen (Recursive Split)                         | `800`                                   |
 | `CHUNK_OVERLAP`     | Überlappung zwischen aufeinanderfolgenden Chunks in Zeichen (Recursive Split) | `150`                               |
 | `LOG_LEVEL`         | Log-Level (`INFO` oder `DEBUG`)                                           | `INFO`                                  |
+
+### API-Variablen
+
+| Variable       | Beschreibung                                                                  | Default   |
+|----------------|-------------------------------------------------------------------------------|-----------|
+| `API_ENABLED`  | Schalter für den API-Mode (`true`/`false`)                                    | `false`   |
+| `API_HOST`     | Bind-Adresse des HTTP-Servers                                                 | `0.0.0.0` |
+| `API_PORT`     | Port des HTTP-Servers                                                         | `8080`    |
+| `API_KEY`      | Optionaler API-Schlüssel; leer/nicht gesetzt = keine Authentifizierung        | *(leer)*  |
+| `SEARCH_MODE`  | Standard-Suchmodus (`vector` oder `hybrid`), falls im Request nicht angegeben  | `vector`  |
+
+## Betriebsmodi
+
+### Indexer (One-Shot)
+
+```bash
+docker compose run --rm indexer
+```
+
+Startet einen einmaligen Indexierungslauf und beendet sich danach. Ideal für Webhook- oder
+Cron-getriggerte Ausführung.
+
+### API (read-only HTTP-Service)
+
+```bash
+docker compose up -d api
+```
+
+Startet den Flask-Service dauerhaft im Hintergrund (`restart: unless-stopped`), lauschend auf dem
+über `API_PORT` konfigurierten Port (Default `8080`).
+
+## API-Endpunkte
+
+| Methode | Pfad                | Beschreibung                                             | Auth (falls `API_KEY` gesetzt) |
+|---------|---------------------|---------------------------------------------------------|--------------------------------|
+| `GET`   | `/health`           | Health-Check, liefert `{"status": "ok"}`                | nein                           |
+| `POST`  | `/search`           | Suche über die indexierten Chunks (vector oder hybrid)  | ja                             |
+| `GET`   | `/document/{id}`    | Metadaten eines Dokuments anhand der Paperless-ID       | ja                             |
+
+Ist `API_KEY` gesetzt, müssen `/search` und `/document/{id}` den Header `X-API-Key` mitschicken.
+`/health` benötigt niemals eine Authentifizierung.
+
+### `GET /health`
+
+```bash
+curl http://localhost:8080/health
+```
+
+Antwort:
+
+```json
+{"status": "ok"}
+```
+
+### `POST /search`
+
+Das Feld `mode` ist **optional** – fehlt es, wird der über `SEARCH_MODE` konfigurierte
+Standardmodus verwendet.
+
+Vector-Suche (semantisch):
+
+```bash
+curl -X POST http://localhost:8080/search \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: dein_api_key" \
+  -d '{"query": "Kündigungsfrist Mietvertrag", "limit": 5, "mode": "vector"}'
+```
+
+Hybrid-Suche (semantisch + Volltext):
+
+```bash
+curl -X POST http://localhost:8080/search \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: dein_api_key" \
+  -d '{"query": "Kündigungsfrist Mietvertrag", "limit": 5, "mode": "hybrid"}'
+```
+
+Beispiel-Antwort:
+
+```json
+{
+  "results": [
+    {
+      "score": 0.8123,
+      "document_id": 42,
+      "title": "Mietvertrag Musterstraße",
+      "text": "Die Kündigungsfrist beträgt drei Monate ...",
+      "chunk_index": 2
+    }
+  ]
+}
+```
+
+### `GET /document/{id}`
+
+```bash
+curl http://localhost:8080/document/42 \
+  -H "X-API-Key: dein_api_key"
+```
+
+Beispiel-Antwort:
+
+```json
+{
+  "document_id": 42,
+  "title": "Mietvertrag Musterstraße",
+  "created": "2024-05-01T10:00:00Z",
+  "tags": [3, 7],
+  "document_type": 2,
+  "correspondent": 5
+}
+```
+
+### Suchmodi
+
+| Modus    | Beschreibung                                                                       |
+|----------|------------------------------------------------------------------------------------|
+| `vector` | Rein semantische Suche über die Embedding-Vektoren (Cosine-Ähnlichkeit).           |
+| `hybrid` | Kombination aus semantischer Suche und Volltext-Filter; Ergebnisse werden gemerged (dedupliziert nach Point-ID) und nach Score sortiert. |
+
+## Chunking-Algorithmus
+
+Der Indexer verwendet einen hierarchischen **Recursive-Split-Algorithmus** statt eines einfachen
+Fixed-Size-Chunkers. Der Text wird zunächst entlang der gröbsten natürlichen Grenze getrennt und
+fällt nur dann auf die nächstfeinere Ebene zurück, wenn ein Abschnitt weiterhin zu groß ist. Die
+Separator-Hierarchie lautet:
+
+1. `\n\n` (Absatz)
+2. `\n` (Zeile)
+3. `. ` (Satz)
+4. ` ` (Wort)
+
+Für Normen, Weisungen und Verordnungen ist dies besser geeignet, da deren explizite
+Dokumentstruktur (Artikel, Absätze, Sätze) erhalten bleibt und semantische Einheiten nicht mitten
+im Satz zerschnitten werden. Chunk-Größe und Überlappung sind über `CHUNK_SIZE` und
+`CHUNK_OVERLAP` steuerbar.
 
 ## Paperless Webhook-Integration
 
@@ -158,7 +309,7 @@ durch Paperless-ngx anstoßen. Es gibt zwei erprobte Varianten.
    der seinerseits den Indexer startet:
 
    ```bash
-   docker compose run --rm --env-file .env indexer
+   docker compose run --rm indexer
    ```
 
    Da Paperless-Workflows nur einen HTTP-Request auslösen, benötigst du dafür einen minimalen
@@ -195,79 +346,6 @@ PAPERLESS_POST_CONSUME_SCRIPT=/usr/src/paperless/scripts/post_consume_indexer.sh
 
 > ⚠️ Damit das Skript den Docker-Host erreichen kann, muss der Docker-Socket im Paperless-Container
 > verfügbar sein (Mount von `/var/run/docker.sock`).
-
-## API-Mode
-
-Zusätzlich zum One-Shot-Indexer bringt das Projekt einen optionalen, **read-only** HTTP-Service mit,
-der semantische Suche und Dokument-Metadaten über eine schlanke REST-API bereitstellt. Der Service
-enthält **keine LLM-Logik** und **keinen Schreibzugriff** auf Qdrant – er liest ausschließlich aus
-der bereits vom Indexer befüllten Collection.
-
-Der API-Mode teilt sich die gemeinsamen Komponenten (`config.py`, `clients.py`) mit dem Indexer, es
-gibt also keine Code-Duplizierung.
-
-### Starten
-
-```bash
-docker compose up api
-```
-
-Der Service läuft dauerhaft (`restart: unless-stopped`) und lauscht standardmäßig auf Port `8080`.
-
-### Endpunkte
-
-| Methode | Pfad                | Beschreibung                                             |
-|---------|---------------------|---------------------------------------------------------|
-| `GET`   | `/health`           | Health-Check, liefert `{"status": "ok"}`                |
-| `POST`  | `/search`           | Suche über die indexierten Chunks (vector oder hybrid)  |
-| `GET`   | `/document/{id}`    | Metadaten eines Dokuments anhand der Paperless-ID       |
-
-Ist `API_KEY` gesetzt, müssen `/search` und `/document/{id}` den Header `X-API-Key` mitschicken.
-`/health` benötigt niemals eine Authentifizierung.
-
-### Beispiel-Aufrufe
-
-Health-Check:
-
-```bash
-curl http://localhost:8080/health
-```
-
-Suche (der `mode` ist optional – Default ist der Wert von `SEARCH_MODE`):
-
-```bash
-curl -X POST http://localhost:8080/search \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: dein_api_key" \
-  -d '{"query": "Kündigungsfrist Mietvertrag", "limit": 5, "mode": "hybrid"}'
-```
-
-Dokument-Metadaten:
-
-```bash
-curl http://localhost:8080/document/42 \
-  -H "X-API-Key: dein_api_key"
-```
-
-### Suchmodi
-
-| Modus    | Beschreibung                                                                       |
-|----------|------------------------------------------------------------------------------------|
-| `vector` | Rein semantische Suche über die Embedding-Vektoren (Cosine-Ähnlichkeit).           |
-| `hybrid` | Kombination aus semantischer Suche und Volltext-Filter; Ergebnisse werden gemerged und nach Score sortiert. |
-
-### API-Umgebungsvariablen
-
-| Variable       | Beschreibung                                                             | Default   |
-|----------------|--------------------------------------------------------------------------|-----------|
-| `API_ENABLED`  | Schalter für den API-Mode (`true`/`false`)                               | `false`   |
-| `API_HOST`     | Bind-Adresse des HTTP-Servers                                            | `0.0.0.0` |
-| `API_PORT`     | Port des HTTP-Servers                                                    | `8080`    |
-| `API_KEY`      | Optionaler API-Schlüssel; leer/nicht gesetzt = keine Authentifizierung   | *(leer)*  |
-| `SEARCH_MODE`  | Standard-Suchmodus (`vector` oder `hybrid`), falls im Request nicht angegeben | `vector` |
-
-> ℹ️ Das Feld `mode` im `/search`-Request ist optional. Fehlt es, wird der über `SEARCH_MODE`
-> konfigurierte Standardmodus verwendet.
 
 ## Datenmodell (Qdrant-Payload)
 
