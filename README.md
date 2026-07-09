@@ -45,12 +45,31 @@ gibt **keine externen State-Dateien**.
 - 🚀 **One-Shot-Betrieb** – kein Polling-Loop, kein Dauerdienst; läuft, wenn er gebraucht wird.
 - 🔁 **Inkrementelle Indexierung** – Änderungserkennung per SHA-256-`content_hash`; unveränderte Dokumente werden übersprungen.
 - ♻️ **Idempotent** – deterministische Point-IDs (`uuid5`), wiederholte Läufe erzeugen keine Duplikate.
-- ✂️ **Wort-genaues Chunking** – Text wird an Wort-Grenzen mit konfigurierbarer Überlappung geteilt.
+- ✂️ **Recursive Split Chunking (Absatz → Satz → Wort)** – Text wird hierarchisch an natürlichen Grenzen mit konfigurierbarer Überlappung geteilt.
 - 🔌 **OpenAI-kompatible Embeddings** – funktioniert mit Ollama, LocalAI, LM Studio & Co.
 - 🗂️ **Reichhaltige Metadaten** – Titel, Korrespondent, Dokumenttyp, Tags und Datumsangaben landen im Qdrant-Payload.
 - 🧠 **Zustandslos** – keine State-Dateien; der einzige Zustand ist der `content_hash` in Qdrant.
 - 🐳 **Docker-ready** – minimales Image, per `docker compose run` gestartet.
 - 💻 **CPU-only tauglich** – benötigt selbst keine GPU (Embeddings erledigt der externe Service).
+
+## Chunking-Algorithmus
+
+Der Indexer verwendet einen hierarchischen **Recursive-Split-Algorithmus** statt eines einfachen
+Fixed-Size-Chunkers. Der Text wird zunächst entlang der gröbsten natürlichen Grenze getrennt und
+fällt nur dann auf die nächstfeinere Ebene zurück, wenn ein Abschnitt weiterhin zu groß ist. Die
+Separator-Reihenfolge lautet:
+
+1. `\n\n` (Absatz)
+2. `\n` (Zeile)
+3. `. ` (Satz)
+4. ` ` (Wort)
+
+Für Normen, Weisungen und Verordnungen ist dies besser geeignet, da deren explizite
+Dokumentstruktur (Artikel, Absätze, Sätze) erhalten bleibt und semantische Einheiten nicht mitten
+im Satz zerschnitten werden.
+
+Die Chunk-Größe und die Überlappung sind über die Umgebungsvariablen `CHUNK_SIZE` und
+`CHUNK_OVERLAP` steuerbar.
 
 ## Voraussetzungen
 
@@ -119,8 +138,8 @@ unveränderte Dokumente werden automatisch übersprungen.
 | `VECTOR_SIZE`       | Dimension der Embedding-Vektoren (muss zum Modell passen)                 | `1024`                                  |
 | `QDRANT_URL`        | Basis-URL der Qdrant-Instanz                                              | `http://qdrant:6333`                    |
 | `QDRANT_COLLECTION` | Name der Qdrant-Collection (wird bei Bedarf automatisch angelegt)         | `paperless`                             |
-| `CHUNK_SIZE`        | Maximale Chunk-Größe in Zeichen                                           | `800`                                   |
-| `CHUNK_OVERLAP`     | Überlappung zwischen aufeinanderfolgenden Chunks in Zeichen               | `150`                                   |
+| `CHUNK_SIZE`        | Maximale Chunk-Größe in Zeichen (Recursive Split)                         | `800`                                   |
+| `CHUNK_OVERLAP`     | Überlappung zwischen aufeinanderfolgenden Chunks in Zeichen (Recursive Split) | `150`                               |
 | `LOG_LEVEL`         | Log-Level (`INFO` oder `DEBUG`)                                           | `INFO`                                  |
 
 ## Paperless Webhook-Integration
