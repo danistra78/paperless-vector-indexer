@@ -39,11 +39,13 @@ gibt **keine externen State-Dateien**.
 2. Der Indexer ruft alle Dokumente samt Volltext paginiert über die REST-API ab.
 3. Neue/geänderte Dokumente werden in überlappende Chunks zerlegt und einzeln embeddet.
 4. Die Vektoren werden zusammen mit Metadaten als Points in Qdrant gespeichert.
+5. Am Ende jedes Laufs findet ein Abgleich statt: Alle Qdrant-IDs, die nicht mehr in Paperless existieren, werden gelöscht.
 
 ## Features
 
 - 🚀 **One-Shot-Betrieb** – kein Polling-Loop, kein Dauerdienst; läuft, wenn er gebraucht wird.
 - 🔁 **Inkrementelle Indexierung** – Änderungserkennung per SHA-256-`content_hash`; unveränderte Dokumente werden übersprungen.
+- 🗑️ **Lösch-Synchronisation** – in Paperless gelöschte Dokumente werden automatisch aus Qdrant entfernt.
 - ♻️ **Idempotent** – deterministische Point-IDs (`uuid5`), wiederholte Läufe erzeugen keine Duplikate.
 - ✂️ **Recursive Split Chunking (Absatz → Satz → Wort)** – Text wird hierarchisch an natürlichen Grenzen mit konfigurierbarer Überlappung geteilt.
 - 🔌 **OpenAI-kompatible Embeddings** – funktioniert mit Ollama, LocalAI, LM Studio & Co.
