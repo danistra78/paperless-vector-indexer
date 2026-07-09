@@ -99,48 +99,40 @@ def content_hash(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def chunk_text(text, chunk_size, overlap):
-    """Text in ueberlappende Chunks entlang von Wort-Grenzen teilen.
-
-    Es wird nie mitten in einem Wort geschnitten. `overlap` gibt die
-    ungefaehre Zeichen-Ueberlappung zwischen aufeinanderfolgenden Chunks an.
-    """
-    words = text.split()
-    if not words:
+def recursive_split(text: str, chunk_size: int, chunk_overlap: int, separators: list[str]) -> list[str]:
+    if not text:
         return []
-
+    sep = separators[0]
+    next_seps = separators[1:]
+    parts = text.split(sep) if sep else list(text)
     chunks = []
-    current = []
-    current_len = 0
-
-    for word in words:
-        # +1 fuer das Leerzeichen zwischen Woertern.
-        add_len = len(word) + (1 if current else 0)
-        if current_len + add_len > chunk_size and current:
-            chunks.append(" ".join(current))
-            # Ueberlappung aufbauen: letzte Woerter uebernehmen bis `overlap`
-            # Zeichen erreicht sind.
-            overlap_words = []
-            overlap_len = 0
-            for w in reversed(current):
-                wl = len(w) + (1 if overlap_words else 0)
-                if overlap_len + wl > overlap:
-                    break
-                overlap_words.insert(0, w)
-                overlap_len += wl
-            current = list(overlap_words)
-            current_len = overlap_len
-            # Aktuelles Wort nach dem Overlap anhaengen.
-            current.append(word)
-            current_len += len(word) + (1 if overlap_words else 0)
+    current = ""
+    for part in parts:
+        candidate = (current + sep + part).strip() if current else part.strip()
+        if len(candidate) <= chunk_size:
+            current = candidate
         else:
-            current.append(word)
-            current_len += add_len
-
+            if current:
+                chunks.append(current)
+            if len(part.strip()) > chunk_size and next_seps:
+                chunks.extend(recursive_split(part.strip(), chunk_size, chunk_overlap, next_seps))
+                current = ""
+            else:
+                current = part.strip()
     if current:
-        chunks.append(" ".join(current))
-
+        chunks.append(current)
+    # Overlap: Prefix vom vorherigen Chunk anhängen
+    if chunk_overlap > 0 and len(chunks) > 1:
+        overlapped = [chunks[0]]
+        for i in range(1, len(chunks)):
+            prefix = chunks[i-1][-chunk_overlap:]
+            merged = (prefix + " " + chunks[i]).strip()
+            overlapped.append(merged if len(merged) <= chunk_size * 1.2 else chunks[i])
+        return overlapped
     return chunks
+
+def chunk_text(text: str, chunk_size: int, chunk_overlap: int) -> list[str]:
+    return recursive_split(text, chunk_size, chunk_overlap, ["\n\n", "\n", ". ", " "])
 
 
 def embed(text):
