@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Hinzugefügt
+- Offizieller Python-Client (paperless_vector_indexer/) mit Client, SearchResult, Document und typisierten Exceptions
+- Hermes-kompatible Schnittstelle: from paperless_vector_indexer import Client
 - API-Mode: optionaler HTTP-Service (GET /health, POST /search, GET /document/{id})
 - Suchmodi: vector (semantisch) und hybrid (semantisch + Volltext)
 - Gemeinsame Komponenten in config.py und clients.py (DRY)

@@ -347,6 +347,98 @@ PAPERLESS_POST_CONSUME_SCRIPT=/usr/src/paperless/scripts/post_consume_indexer.sh
 > ⚠️ Damit das Skript den Docker-Host erreichen kann, muss der Docker-Socket im Paperless-Container
 > verfügbar sein (Mount von `/var/run/docker.sock`).
 
+## Python Client
+
+Das Projekt enthält einen **offiziellen Python-Client** (`paperless_vector_indexer/`), der die
+API bequem aus Python heraus ansprechbar macht. Da der Client im selben Repository lebt, bleibt er
+**immer synchron mit der API** – Änderungen an Endpunkten oder Response-Strukturen werden zusammen
+mit dem Client gepflegt.
+
+### Installation
+
+Es wird **kein `pip`** benötigt. Sobald das Repository im Python-Path liegt (z. B. weil du dich im
+Projektverzeichnis befindest oder es zum `PYTHONPATH` hinzufügst), ist das Package direkt
+importierbar:
+
+```python
+from paperless_vector_indexer import Client
+```
+
+### Verwendung
+
+```python
+from paperless_vector_indexer import (
+    Client,
+    IndexerConnectionError,
+    AuthenticationError,
+    SearchError,
+    DocumentNotFoundError,
+)
+
+# Client initialisieren (api_key nur nötig, wenn die API mit API_KEY läuft)
+client = Client(base_url="http://localhost:8080", api_key="dein_api_key")
+
+# 1. Health-Check
+if not client.health():
+    raise SystemExit("API nicht erreichbar")
+
+# 2. Suche (mode ist optional -> Default der API greift, sonst "vector"/"hybrid")
+try:
+    results = client.search("Kündigungsfrist Mietvertrag", limit=5, mode="hybrid")
+    for r in results:
+        print(f"[{r.score:.3f}] Dok {r.document_id} · {r.title}")
+        print(f"   {r.text}")
+except AuthenticationError:
+    print("Ungültiger API-Key")
+except SearchError as e:
+    print(f"Suche fehlgeschlagen: {e}")
+
+# 3. Dokument-Metadaten abrufen
+try:
+    doc = client.get_document(42)
+    print(doc.title, doc.created, doc.tags)
+except DocumentNotFoundError:
+    print("Dokument existiert nicht")
+except IndexerConnectionError as e:
+    print(f"Verbindungsfehler: {e}")
+```
+
+### Client-Parameter
+
+| Parameter  | Typ           | Beschreibung                                                | Default                   |
+|------------|---------------|-------------------------------------------------------------|---------------------------|
+| `base_url` | `str`         | Basis-URL der API (trailing Slash wird entfernt)            | `http://localhost:8080`   |
+| `api_key`  | `str \| None` | API-Schlüssel; wird als `X-API-Key`-Header gesendet         | `None` (kein Header)      |
+| `timeout`  | `int`         | HTTP-Timeout in Sekunden                                    | `10`                      |
+
+### Methoden
+
+| Methode                                          | Rückgabe             | Beschreibung                                                    |
+|--------------------------------------------------|----------------------|----------------------------------------------------------------|
+| `health()`                                       | `bool`               | `True`, wenn die API erreichbar ist und `{"status": "ok"}` liefert. |
+| `search(query, limit=5, mode=None)`              | `list[SearchResult]` | Führt eine Suche aus; `mode` optional (`vector`/`hybrid`).      |
+| `get_document(document_id)`                      | `Document`           | Liefert die Metadaten eines Dokuments.                         |
+
+### Exceptions
+
+| Exception                 | Ausgelöst bei                                                          |
+|---------------------------|------------------------------------------------------------------------|
+| `IndexerConnectionError`  | Server nicht erreichbar oder Netzwerk-/Timeout-Fehler.                 |
+| `AuthenticationError`     | Ungültiger oder fehlender API-Key (HTTP 401).                         |
+| `SearchError`             | Fehler bei der Suchanfrage (HTTP 4xx/5xx außer 401/404).              |
+| `DocumentNotFoundError`   | Dokument mit dieser ID existiert nicht (HTTP 404).                    |
+
+### Hermes-Kompatibilität
+
+Der Client ist bewusst schlank und **Hermes-kompatibel**: Ein einzelner Import genügt, um ihn in
+Hermes-Skills, Tools oder Agenten einzubinden:
+
+```python
+from paperless_vector_indexer import Client
+```
+
+Es sind keine zusätzlichen Abhängigkeiten außer `requests` erforderlich.
+
 ## Datenmodell (Qdrant-Payload)
 
 Jeder Chunk wird als eigener Point in Qdrant gespeichert. Die Point-ID wird deterministisch über
