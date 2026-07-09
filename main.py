@@ -275,6 +275,56 @@ def process_document(client, doc):
 
 
 # ---------------------------------------------------------------------------
+# Lösch-Synchronisation
+# ---------------------------------------------------------------------------
+def qdrant_paperless_ids(client):
+    """Alle in Qdrant vorhandenen paperless_id-Werte sammeln (mit Pagination)."""
+    ids = set()
+    offset = None
+    while True:
+        points, next_offset = client.scroll(
+            collection_name=QDRANT_COLLECTION,
+            limit=256,
+            offset=offset,
+            with_payload=["paperless_id"],
+            with_vectors=False,
+        )
+        for point in points:
+            pid = point.payload.get("paperless_id")
+            if pid is not None:
+                ids.add(pid)
+        if next_offset is None:
+            break
+        offset = next_offset
+    return ids
+
+
+def sync_deletions(client, current_ids):
+    """In Paperless geloeschte Dokumente auch aus Qdrant entfernen.
+
+    `current_ids` ist die Menge aller aktuell in Paperless vorhandenen IDs.
+    Verwaiste IDs (in Qdrant, aber nicht mehr in Paperless) werden geloescht.
+    """
+    indexed_ids = qdrant_paperless_ids(client)
+    orphan_ids = indexed_ids - set(current_ids)
+
+    if not orphan_ids:
+        log.info("Lösch-Synchronisation: keine verwaisten Dokumente gefunden")
+        return
+
+    deleted = 0
+    for orphan_id in orphan_ids:
+        try:
+            delete_document_points(client, orphan_id)
+            deleted += 1
+            log.info("Verwaistes Dokument %s aus Qdrant geloescht", orphan_id)
+        except Exception as exc:  # pro Dokument: loggen und weitermachen
+            log.error("Fehler beim Loeschen von Dokument %s: %s", orphan_id, exc)
+
+    log.info("Lösch-Synchronisation: %d Dokumente aus Qdrant entfernt", deleted)
+
+
+# ---------------------------------------------------------------------------
 # Einstiegspunkt
 # ---------------------------------------------------------------------------
 def main():
@@ -304,6 +354,13 @@ def main():
         failed,
         len(documents),
     )
+
+    # Lösch-Synchronisation: in Paperless entfernte Dokumente auch aus Qdrant loeschen.
+    current_ids = {doc["id"] for doc in documents}
+    try:
+        sync_deletions(client, current_ids)
+    except Exception as exc:
+        log.error("Fehler bei der Lösch-Synchronisation: %s", exc)
 
 
 if __name__ == "__main__":

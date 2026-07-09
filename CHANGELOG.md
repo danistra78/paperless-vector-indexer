@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Hinzugefügt
+- Lösch-Synchronisation: Dokumente die in Paperless gelöscht wurden, werden automatisch auch aus Qdrant entfernt
+
 ### Geändert
 - Chunking-Algorithmus von Fixed-Size auf Recursive Split umgestellt
 
