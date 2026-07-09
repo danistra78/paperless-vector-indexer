@@ -1,0 +1,26 @@
+services:
+  indexer:
+    build: .
+    image: paperless-vector-indexer
+    # One-Shot: kein Neustart, Container laeuft einmal und beendet sich
+    restart: "no"
+    environment:
+      # --- Paperless-ngx ---
+      PAPERLESS_URL: "http://paperless:8000"
+      PAPERLESS_TOKEN: "DEIN_PAPERLESS_API_TOKEN"
+
+      # --- Embedding-Service (OpenAI-kompatibel) ---
+      EMBEDDING_URL: "http://embedding:8080/v1/embeddings"
+      EMBEDDING_MODEL: "dein-embedding-modell"
+      VECTOR_SIZE: "1024"
+
+      # --- Qdrant ---
+      QDRANT_URL: "http://qdrant:6333"
+      QDRANT_COLLECTION: "paperless"
+
+      # --- Chunking ---
+      CHUNK_SIZE: "800"
+      CHUNK_OVERLAP: "150"
+
+      # --- Logging ---
+      LOG_LEVEL: "INFO"
