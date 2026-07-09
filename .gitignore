@@ -27,3 +27,6 @@ env/
 Thumbs.db
 .idea/
 .vscode/
+
+# Agent-Logs
+.logs/

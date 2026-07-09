@@ -8,32 +8,26 @@ und beendet sich anschliessend. Kein Polling-Loop, keine State-Dateien.
 
 import hashlib
 import logging
-import os
 import sys
 import uuid
 
 import requests
-from qdrant_client import QdrantClient
 from qdrant_client.http import models as qmodels
 
+from clients import get_qdrant, embed
+from config import (
+    PAPERLESS_URL,
+    PAPERLESS_TOKEN,
+    VECTOR_SIZE,
+    QDRANT_COLLECTION,
+    CHUNK_SIZE,
+    CHUNK_OVERLAP,
+    LOG_LEVEL,
+)
+
 # ---------------------------------------------------------------------------
-# Konfiguration (ausschliesslich ueber Umgebungsvariablen)
+# Konstanten
 # ---------------------------------------------------------------------------
-PAPERLESS_URL = os.environ.get("PAPERLESS_URL", "http://paperless:8000").rstrip("/")
-PAPERLESS_TOKEN = os.environ.get("PAPERLESS_TOKEN", "")
-
-EMBEDDING_URL = os.environ.get("EMBEDDING_URL", "http://embedding:8080/v1/embeddings")
-EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "")
-VECTOR_SIZE = int(os.environ.get("VECTOR_SIZE", "1024"))
-
-QDRANT_URL = os.environ.get("QDRANT_URL", "http://qdrant:6333").rstrip("/")
-QDRANT_COLLECTION = os.environ.get("QDRANT_COLLECTION", "paperless")
-
-CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", "800"))
-CHUNK_OVERLAP = int(os.environ.get("CHUNK_OVERLAP", "150"))
-
-LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
-
 # Fester Namespace fuer deterministische Point-IDs (uuid5).
 UUID_NAMESPACE = uuid.UUID("6f9b1d2e-3c4a-5b6c-7d8e-9f0a1b2c3d4e")
 
@@ -44,7 +38,7 @@ HTTP_TIMEOUT = 60
 # Logging
 # ---------------------------------------------------------------------------
 logging.basicConfig(
-    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    level=getattr(logging, LOG_LEVEL.upper(), logging.INFO),
     format="%(asctime)s %(levelname)s %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
     stream=sys.stdout,
@@ -133,17 +127,6 @@ def recursive_split(text: str, chunk_size: int, chunk_overlap: int, separators: 
 
 def chunk_text(text: str, chunk_size: int, chunk_overlap: int) -> list[str]:
     return recursive_split(text, chunk_size, chunk_overlap, ["\n\n", "\n", ". ", " "])
-
-
-def embed(text):
-    """Embedding fuer einen einzelnen Chunk via POST /v1/embeddings holen."""
-    payload = {"input": text}
-    if EMBEDDING_MODEL:
-        payload["model"] = EMBEDDING_MODEL
-    resp = requests.post(EMBEDDING_URL, json=payload, timeout=HTTP_TIMEOUT)
-    resp.raise_for_status()
-    data = resp.json()
-    return data["data"][0]["embedding"]
 
 
 # ---------------------------------------------------------------------------
@@ -333,7 +316,7 @@ def main():
         sys.exit(1)
 
     log.info("Starte Paperless-Vector-Indexer (One-Shot)")
-    client = QdrantClient(url=QDRANT_URL, timeout=HTTP_TIMEOUT)
+    client = get_qdrant()
     ensure_collection(client)
 
     documents = fetch_all_documents()

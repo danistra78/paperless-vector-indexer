@@ -99,7 +99,7 @@ PAPERLESS_URL=http://paperless:8000
 PAPERLESS_TOKEN=dein_paperless_api_token
 
 # --- Embedding-Service (OpenAI-kompatibel) ---
-EMBEDDING_URL=http://embedding:8080/v1/embeddings
+EMBEDDING_URL=http://embedding:8080
 EMBEDDING_MODEL=nomic-embed-text
 VECTOR_SIZE=768
 
@@ -135,7 +135,7 @@ unveränderte Dokumente werden automatisch übersprungen.
 |---------------------|---------------------------------------------------------------------------|-----------------------------------------|
 | `PAPERLESS_URL`     | Basis-URL der Paperless-ngx-Instanz                                       | `http://paperless:8000`                 |
 | `PAPERLESS_TOKEN`   | API-Token aus Paperless (**erforderlich**, sonst Abbruch)                 | *(leer)*                                |
-| `EMBEDDING_URL`     | OpenAI-kompatibler Embeddings-Endpunkt (`POST /v1/embeddings`)            | `http://embedding:8080/v1/embeddings`   |
+| `EMBEDDING_URL`     | Basis-URL des OpenAI-kompatiblen Embedding-Dienstes (Pfad `/v1/embeddings` wird angehängt) | `http://embedding:8080`                 |
 | `EMBEDDING_MODEL`   | Modellname, wird im Request mitgeschickt (falls gesetzt)                  | *(leer)*                                |
 | `VECTOR_SIZE`       | Dimension der Embedding-Vektoren (muss zum Modell passen)                 | `1024`                                  |
 | `QDRANT_URL`        | Basis-URL der Qdrant-Instanz                                              | `http://qdrant:6333`                    |
@@ -195,6 +195,79 @@ PAPERLESS_POST_CONSUME_SCRIPT=/usr/src/paperless/scripts/post_consume_indexer.sh
 
 > ⚠️ Damit das Skript den Docker-Host erreichen kann, muss der Docker-Socket im Paperless-Container
 > verfügbar sein (Mount von `/var/run/docker.sock`).
+
+## API-Mode
+
+Zusätzlich zum One-Shot-Indexer bringt das Projekt einen optionalen, **read-only** HTTP-Service mit,
+der semantische Suche und Dokument-Metadaten über eine schlanke REST-API bereitstellt. Der Service
+enthält **keine LLM-Logik** und **keinen Schreibzugriff** auf Qdrant – er liest ausschließlich aus
+der bereits vom Indexer befüllten Collection.
+
+Der API-Mode teilt sich die gemeinsamen Komponenten (`config.py`, `clients.py`) mit dem Indexer, es
+gibt also keine Code-Duplizierung.
+
+### Starten
+
+```bash
+docker compose up api
+```
+
+Der Service läuft dauerhaft (`restart: unless-stopped`) und lauscht standardmäßig auf Port `8080`.
+
+### Endpunkte
+
+| Methode | Pfad                | Beschreibung                                             |
+|---------|---------------------|---------------------------------------------------------|
+| `GET`   | `/health`           | Health-Check, liefert `{"status": "ok"}`                |
+| `POST`  | `/search`           | Suche über die indexierten Chunks (vector oder hybrid)  |
+| `GET`   | `/document/{id}`    | Metadaten eines Dokuments anhand der Paperless-ID       |
+
+Ist `API_KEY` gesetzt, müssen `/search` und `/document/{id}` den Header `X-API-Key` mitschicken.
+`/health` benötigt niemals eine Authentifizierung.
+
+### Beispiel-Aufrufe
+
+Health-Check:
+
+```bash
+curl http://localhost:8080/health
+```
+
+Suche (der `mode` ist optional – Default ist der Wert von `SEARCH_MODE`):
+
+```bash
+curl -X POST http://localhost:8080/search \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: dein_api_key" \
+  -d '{"query": "Kündigungsfrist Mietvertrag", "limit": 5, "mode": "hybrid"}'
+```
+
+Dokument-Metadaten:
+
+```bash
+curl http://localhost:8080/document/42 \
+  -H "X-API-Key: dein_api_key"
+```
+
+### Suchmodi
+
+| Modus    | Beschreibung                                                                       |
+|----------|------------------------------------------------------------------------------------|
+| `vector` | Rein semantische Suche über die Embedding-Vektoren (Cosine-Ähnlichkeit).           |
+| `hybrid` | Kombination aus semantischer Suche und Volltext-Filter; Ergebnisse werden gemerged und nach Score sortiert. |
+
+### API-Umgebungsvariablen
+
+| Variable       | Beschreibung                                                             | Default   |
+|----------------|--------------------------------------------------------------------------|-----------|
+| `API_ENABLED`  | Schalter für den API-Mode (`true`/`false`)                               | `false`   |
+| `API_HOST`     | Bind-Adresse des HTTP-Servers                                            | `0.0.0.0` |
+| `API_PORT`     | Port des HTTP-Servers                                                    | `8080`    |
+| `API_KEY`      | Optionaler API-Schlüssel; leer/nicht gesetzt = keine Authentifizierung   | *(leer)*  |
+| `SEARCH_MODE`  | Standard-Suchmodus (`vector` oder `hybrid`), falls im Request nicht angegeben | `vector` |
+
+> ℹ️ Das Feld `mode` im `/search`-Request ist optional. Fehlt es, wird der über `SEARCH_MODE`
+> konfigurierte Standardmodus verwendet.
 
 ## Datenmodell (Qdrant-Payload)
 

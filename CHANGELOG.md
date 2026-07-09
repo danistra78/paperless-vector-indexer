@@ -3,6 +3,11 @@
 ## [Unreleased]
 
 ### Hinzugefügt
+- API-Mode: optionaler HTTP-Service (GET /health, POST /search, GET /document/{id})
+- Suchmodi: vector (semantisch) und hybrid (semantisch + Volltext)
+- Gemeinsame Komponenten in config.py und clients.py (DRY)
+- API_KEY-Authentifizierung (optional)
+- Neuer docker-compose Service `api` (restart: unless-stopped)
 - Lösch-Synchronisation: Dokumente die in Paperless gelöscht wurden, werden automatisch auch aus Qdrant entfernt
 
 ### Geändert
