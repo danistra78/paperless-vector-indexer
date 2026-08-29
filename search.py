@@ -11,10 +11,15 @@ from config import QDRANT_COLLECTION
 
 
 def _payload_to_result(hit) -> dict:
-    """Qdrant-Treffer in ein schlankes Ergebnis-Dict umwandeln."""
+    """Qdrant-Treffer in ein schlankes Ergebnis-Dict umwandeln.
+
+    `hit` kann ein ScoredPoint (aus search(), hat .score) oder ein Record
+    (aus scroll(), kein .score-Attribut) sein.
+    """
     p = hit.payload
+    score = getattr(hit, "score", None)
     return {
-        "score": round(hit.score, 4) if hit.score is not None else None,
+        "score": round(score, 4) if score is not None else None,
         "document_id": p.get("paperless_id"),
         "title": p.get("title"),
         "text": p.get("content"),
