@@ -21,7 +21,7 @@ from config import (
 )
 
 logging.basicConfig(
-    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    level=getattr(logging, LOG_LEVEL.upper(), logging.INFO),
     format="%(asctime)s %(levelname)s %(message)s",
 )
 log = logging.getLogger("api")
@@ -44,15 +44,24 @@ def health():
 def search():
     _check_auth()
     body = request.get_json(force=True)
+    if not isinstance(body, dict):
+        abort(400, "invalid JSON body")
     query = body.get("query", "").strip()
     if not query:
         abort(400, "query required")
-    limit = int(body.get("limit", 5))
+    try:
+        limit = int(body.get("limit", 5))
+    except (TypeError, ValueError):
+        abort(400, "limit must be an integer")
     mode = body.get("mode", SEARCH_MODE)
     if mode not in ("vector", "hybrid"):
         abort(400, "mode must be vector or hybrid")
     log.info("search query=%r limit=%d mode=%s", query, limit, mode)
-    results = do_search(query, limit, mode)
+    try:
+        results = do_search(query, limit, mode)
+    except RuntimeError as exc:
+        log.error("search failed: %s", exc)
+        abort(502, "embedding service returned an unexpected response")
     return jsonify({"results": results})
 
 

@@ -7,21 +7,24 @@ Alle Umgebungsvariablen werden hier einmalig eingelesen und von main.py
 import os
 
 # --- Paperless-ngx ---
-PAPERLESS_URL = os.environ["PAPERLESS_URL"]
+PAPERLESS_URL = os.environ.get("PAPERLESS_URL", "http://paperless:8000")
 PAPERLESS_TOKEN = os.environ["PAPERLESS_TOKEN"]
 
 # --- Embedding-Service (OpenAI-kompatibel) ---
-EMBEDDING_URL = os.environ["EMBEDDING_URL"]
+EMBEDDING_URL = os.environ.get("EMBEDDING_URL", "http://embedding:8080")
 EMBEDDING_MODEL = os.environ["EMBEDDING_MODEL"]
 VECTOR_SIZE = int(os.environ.get("VECTOR_SIZE", 1024))
 
 # --- Qdrant ---
-QDRANT_URL = os.environ["QDRANT_URL"]
-QDRANT_COLLECTION = os.environ["QDRANT_COLLECTION"]
+QDRANT_URL = os.environ.get("QDRANT_URL", "http://qdrant:6333")
+QDRANT_COLLECTION = os.environ.get("QDRANT_COLLECTION", "paperless")
 
 # --- Chunking ---
 CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", 800))
 CHUNK_OVERLAP = int(os.environ.get("CHUNK_OVERLAP", 150))
+
+# --- HTTP ---
+HTTP_TIMEOUT = int(os.environ.get("HTTP_TIMEOUT", 60))
 
 # --- Logging ---
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")

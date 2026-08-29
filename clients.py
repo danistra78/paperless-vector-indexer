@@ -7,12 +7,12 @@ search.py (API) genutzt, damit kein Code dupliziert wird.
 import requests
 from qdrant_client import QdrantClient
 
-from config import QDRANT_URL, EMBEDDING_URL, EMBEDDING_MODEL
+from config import QDRANT_URL, EMBEDDING_URL, EMBEDDING_MODEL, HTTP_TIMEOUT
 
 
 def get_qdrant() -> QdrantClient:
     """Neuen Qdrant-Client erzeugen."""
-    return QdrantClient(url=QDRANT_URL)
+    return QdrantClient(url=QDRANT_URL, timeout=HTTP_TIMEOUT)
 
 
 def embed(text: str) -> list[float]:
@@ -20,7 +20,10 @@ def embed(text: str) -> list[float]:
     resp = requests.post(
         f"{EMBEDDING_URL}/v1/embeddings",
         json={"model": EMBEDDING_MODEL, "input": text},
-        timeout=60,
+        timeout=HTTP_TIMEOUT,
     )
     resp.raise_for_status()
-    return resp.json()["data"][0]["embedding"]
+    try:
+        return resp.json()["data"][0]["embedding"]
+    except (KeyError, IndexError, ValueError) as exc:
+        raise RuntimeError(f"Unerwartete Embedding-Antwort: {exc}") from exc

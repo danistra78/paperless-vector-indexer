@@ -22,6 +22,7 @@ from config import (
     QDRANT_COLLECTION,
     CHUNK_SIZE,
     CHUNK_OVERLAP,
+    HTTP_TIMEOUT,
     LOG_LEVEL,
 )
 
@@ -30,9 +31,6 @@ from config import (
 # ---------------------------------------------------------------------------
 # Fester Namespace fuer deterministische Point-IDs (uuid5).
 UUID_NAMESPACE = uuid.UUID("6f9b1d2e-3c4a-5b6c-7d8e-9f0a1b2c3d4e")
-
-# HTTP-Timeouts (Sekunden)
-HTTP_TIMEOUT = 60
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -152,6 +150,12 @@ def ensure_collection(client):
         field_name="paperless_id",
         field_schema=qmodels.PayloadSchemaType.INTEGER,
     )
+    # Text-Index auf content fuer die Volltextsuche (Hybrid-Suche in search.py).
+    client.create_payload_index(
+        collection_name=QDRANT_COLLECTION,
+        field_name="content",
+        field_schema=qmodels.PayloadSchemaType.TEXT,
+    )
 
 
 def existing_hash(client, paperless_id):
@@ -201,6 +205,32 @@ def point_id(paperless_id, chunk_index):
     return str(uuid.uuid5(UUID_NAMESPACE, f"{paperless_id}_{chunk_index}"))
 
 
+def delete_stale_chunks(client, paperless_id, keep_count):
+    """Chunks eines Dokuments loeschen, deren Index >= keep_count ist.
+
+    Wird erst NACH einem erfolgreichen Upsert aufgerufen, damit ein
+    verkuerztes Dokument keine Chunks der vorherigen (laengeren) Version
+    behaelt, ohne die frisch geschriebenen Chunks zu gefaehrden.
+    """
+    client.delete(
+        collection_name=QDRANT_COLLECTION,
+        points_selector=qmodels.FilterSelector(
+            filter=qmodels.Filter(
+                must=[
+                    qmodels.FieldCondition(
+                        key="paperless_id",
+                        match=qmodels.MatchValue(value=paperless_id),
+                    ),
+                    qmodels.FieldCondition(
+                        key="chunk_index",
+                        range=qmodels.Range(gte=keep_count),
+                    ),
+                ]
+            )
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Verarbeitung eines Dokuments
 # ---------------------------------------------------------------------------
@@ -217,14 +247,15 @@ def process_document(client, doc):
         return
 
     if prev_hash is not None:
-        log.info("Dokument %d geaendert -> alte Chunks werden geloescht", paperless_id)
-        delete_document_points(client, paperless_id)
+        log.info("Dokument %d geaendert -> wird neu indexiert", paperless_id)
     else:
         log.info("Dokument %d ist neu -> wird indexiert", paperless_id)
 
     chunks = chunk_text(content, CHUNK_SIZE, CHUNK_OVERLAP)
     if not chunks:
         log.info("Dokument %d hat keinen Textinhalt -> nichts zu indexieren", paperless_id)
+        if prev_hash is not None:
+            delete_document_points(client, paperless_id)
         return
 
     # Gemeinsame Metadaten fuer alle Chunks.
@@ -254,6 +285,11 @@ def process_document(client, doc):
         )
 
     client.upsert(collection_name=QDRANT_COLLECTION, points=points)
+    # Erst nach erfolgreichem Upsert alte Chunks jenseits der neuen
+    # Chunk-Anzahl entfernen, damit ein Embedding-Fehler weiter oben das
+    # Dokument nicht komplett aus dem Index wirft.
+    if prev_hash is not None:
+        delete_stale_chunks(client, paperless_id, len(points))
     log.info("Dokument %d indexiert (%d Chunks)", paperless_id, len(points))
 
 
@@ -339,11 +375,17 @@ def main():
     )
 
     # Lösch-Synchronisation: in Paperless entfernte Dokumente auch aus Qdrant loeschen.
-    current_ids = {doc["id"] for doc in documents}
-    try:
-        sync_deletions(client, current_ids)
-    except Exception as exc:
-        log.error("Fehler bei der Lösch-Synchronisation: %s", exc)
+    # Ueberspringen, falls Paperless keine Dokumente geliefert hat - das ist
+    # eher ein Zeichen fuer eine leere/fehlerhafte Antwort als fuer ein
+    # tatsaechlich leeres Archiv, und wuerde sonst die gesamte Collection loeschen.
+    if not documents:
+        log.warning("Lösch-Synchronisation uebersprungen: keine Dokumente von Paperless erhalten")
+    else:
+        current_ids = {doc["id"] for doc in documents}
+        try:
+            sync_deletions(client, current_ids)
+        except Exception as exc:
+            log.error("Fehler bei der Lösch-Synchronisation: %s", exc)
 
 
 if __name__ == "__main__":
