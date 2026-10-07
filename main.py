@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Paperless-Vector-Indexer (One-Shot).
 
-Wird als Webhook / Post-consumption-Script von Paperless-ngx gestartet.
-Ruft alle Dokumente ab, indexiert neue/geaenderte Dokumente in Qdrant
-und beendet sich anschliessend. Kein Polling-Loop, keine State-Dateien.
+Ohne Argument: ruft alle Dokumente ab, indexiert neue/geaenderte
+Dokumente in Qdrant, gleicht Loeschungen ab und beendet sich (z. B. per Cron).
+Mit --doc ID: indexiert nur dieses eine Dokument. Dasselbe macht die API
+mit POST /index/<id>, die das Post-Consume-Script von Paperless aufruft.
+Kein Polling-Loop, keine State-Dateien.
 """
 
+import argparse
 import hashlib
 import logging
 import sys
@@ -14,7 +17,7 @@ import uuid
 import requests
 from qdrant_client.http import models as qmodels
 
-from clients import get_qdrant, embed
+from clients import get_qdrant, embed_document
 from config import (
     PAPERLESS_URL,
     PAPERLESS_TOKEN,
@@ -75,12 +78,17 @@ def fetch_all_documents():
     return documents
 
 
-def fetch_document_content(doc_id):
-    """Volltext eines einzelnen Dokuments laden (Feld `content`)."""
+def fetch_document(doc_id):
+    """Ein einzelnes Dokument samt Volltext (Feld `content`) laden."""
     url = f"{PAPERLESS_URL}/api/documents/{doc_id}/"
     resp = requests.get(url, headers=paperless_headers(), timeout=HTTP_TIMEOUT)
     resp.raise_for_status()
-    return resp.json().get("content", "") or ""
+    return resp.json()
+
+
+def fetch_document_content(doc_id):
+    """Volltext eines einzelnen Dokuments laden (Feld `content`)."""
+    return fetch_document(doc_id).get("content", "") or ""
 
 
 # ---------------------------------------------------------------------------
@@ -238,7 +246,9 @@ def process_document(client, doc):
     """Ein einzelnes Dokument indexieren (neu oder geaendert)."""
     paperless_id = doc["id"]
     content = fetch_document_content(paperless_id)
-    chash = content_hash(content)
+    # Der Titel fliesst ins Embedding ein (EMBEDDING_DOCUMENT_TEMPLATE),
+    # darum loest auch ein neuer Titel eine Neuindexierung aus.
+    chash = content_hash(f"{doc.get('title') or ''}\n{content}")
 
     # Status-Check: bereits identisch indexiert -> ueberspringen.
     prev_hash = existing_hash(client, paperless_id)
@@ -272,7 +282,7 @@ def process_document(client, doc):
 
     points = []
     for idx, chunk in enumerate(chunks):
-        vector = embed(chunk)
+        vector = embed_document(chunk, doc.get("title"))
         payload = dict(base_payload)
         payload["chunk_index"] = idx
         payload["content"] = chunk
@@ -344,12 +354,29 @@ def sync_deletions(client, current_ids):
 
 
 # ---------------------------------------------------------------------------
+# Einzelnes Dokument (Post-Consume / API)
+# ---------------------------------------------------------------------------
+def index_document(doc_id):
+    """Ein Dokument anhand seiner Paperless-ID indexieren."""
+    client = get_qdrant()
+    ensure_collection(client)
+    process_document(client, fetch_document(doc_id))
+
+
+# ---------------------------------------------------------------------------
 # Einstiegspunkt
 # ---------------------------------------------------------------------------
 def main():
     if not PAPERLESS_TOKEN:
         log.error("PAPERLESS_TOKEN ist nicht gesetzt - Abbruch")
         sys.exit(1)
+
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--doc", type=int, help="nur dieses Dokument indexieren")
+    args = parser.parse_args()
+    if args.doc is not None:
+        index_document(args.doc)
+        return
 
     log.info("Starte Paperless-Vector-Indexer (One-Shot)")
     client = get_qdrant()

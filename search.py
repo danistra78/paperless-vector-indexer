@@ -6,7 +6,7 @@ LLM-Logik.
 
 from qdrant_client.models import Filter, FieldCondition, MatchText
 
-from clients import get_qdrant, embed
+from clients import get_qdrant, embed_query
 from config import QDRANT_COLLECTION
 
 
@@ -30,7 +30,7 @@ def _payload_to_result(hit) -> dict:
 def vector_search(query: str, limit: int) -> list[dict]:
     """Rein semantische Suche."""
     qdrant = get_qdrant()
-    vector = embed(query)
+    vector = embed_query(query)
     hits = qdrant.search(
         collection_name=QDRANT_COLLECTION,
         query_vector=vector,
@@ -43,7 +43,7 @@ def vector_search(query: str, limit: int) -> list[dict]:
 def hybrid_search(query: str, limit: int) -> list[dict]:
     """Kombination aus semantischer Suche und Volltext-Filter."""
     qdrant = get_qdrant()
-    vector = embed(query)
+    vector = embed_query(query)
 
     # Semantische Suche
     vec_hits = qdrant.search(

@@ -30,3 +30,7 @@ Thumbs.db
 
 # Agent-Logs
 .logs/
+
+# Lokale Compose-Anpassungen (z. B. network_mode: host)
+docker-compose.override.yaml
+compose.override.yaml
