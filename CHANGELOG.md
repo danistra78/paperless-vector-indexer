@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Sicherheit
+- API startet nur noch mit `API_KEY` (Ausnahme: `API_ALLOW_NO_AUTH=true`); Schlüsselvergleich zeitkonstant
+- Neuer Endpunkt `POST /index/{id}` mit eigenem `INDEX_API_KEY`; `post_consume.sh` ruft ihn per `curl` auf, Paperless braucht keinen Docker-Socket mehr
+- `docker-compose.yaml` lädt alle Werte aus `.env` (Vorlage `.env.example`), keine Schlüssel mehr in der Compose-Datei
+- Agent-Logs (`.logs/`) aus dem Repository entfernt
+
+### Hinzugefügt
+- Unterstützung für EmbeddingGemma 2: `EMBEDDING_QUERY_TEMPLATE` und `EMBEDDING_DOCUMENT_TEMPLATE` für Aufgaben-Präfixe
+- `main.py --doc ID` indexiert ein einzelnes Dokument
+- Prüfung der Embedding-Dimension gegen `VECTOR_SIZE`
+
+### Geändert
+- Der Dokumenttitel fließt in den `content_hash` ein: ein neuer Titel löst eine Neuindexierung aus (einmalige Neuindexierung bestehender Collections)
+- `qdrant-client<1.12` gepinnt
+
 ### Hinzugefügt
 - Offizieller Python-Client (paperless_vector_indexer/) mit Client, SearchResult, Document und typisierten Exceptions
 - Hermes-kompatible Schnittstelle: from paperless_vector_indexer import Client

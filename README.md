@@ -9,12 +9,13 @@
 [Qdrant](https://qdrant.tech/)-Vektordatenbank und ermöglicht damit **semantische Suche** und
 **RAG-Anwendungen** über dein Dokumentenarchiv. Das Projekt bietet **zwei Betriebsmodi**:
 
-- 🔄 **Indexer (One-Shot)** – wird ereignisgesteuert (Webhook / Post-consumption-Script) gestartet,
-  indexiert neue/geänderte Dokumente in Qdrant und beendet sich danach wieder. Kein Polling-Loop,
+- 🔄 **Indexer (One-Shot)** – gleicht alle Dokumente ab (z. B. nächtlich per Cron), indexiert
+  neue/geänderte Dokumente in Qdrant und beendet sich danach wieder. Kein Polling-Loop,
   keine State-Dateien – der einzige Zustand lebt in Qdrant.
-- 🌐 **API (read-only HTTP-Service)** – ein schlanker Flask-Dienst, der semantische bzw. hybride
-  Suche und Dokument-Metadaten über eine REST-API bereitstellt. Kein Schreibzugriff, keine
-  LLM-Logik – liest ausschließlich aus der vom Indexer befüllten Collection.
+- 🌐 **API (HTTP-Service)** – ein schlanker Flask-Dienst, der semantische bzw. hybride
+  Suche und Dokument-Metadaten über eine REST-API bereitstellt, geschützt per Schlüssel. Über
+  `POST /index/{id}` meldet Paperless neue Dokumente, die dann sofort indexiert werden. Keine
+  LLM-Logik.
 
 Beide Modi teilen sich die gemeinsamen Komponenten `config.py` (Konfiguration) und `clients.py`
 (Qdrant- und Embedding-Client), es gibt also keine Code-Duplizierung.
@@ -37,7 +38,7 @@ Beide Modi teilen sich die gemeinsamen Komponenten `config.py` (Konfiguration) u
                                                           └──────────┬───────────┘
                                                                      ▲
                                                     (Suche/Lesen)     │  ┌──────────────────────┐
-   ┌───────────────┐                                                 └──│  API (read-only)      │
+   ┌───────────────┐                                                 └──│  API                  │
    │  HTTP-Client   │ ───────────────────────────────────────────────  │  api.py (Flask)       │ ──▶ Embedding-API
    │  (curl / App)  │              /search, /document/{id}              └──────────────────────┘     (nur für Query-Embedding)
    └───────────────┘
@@ -45,8 +46,10 @@ Beide Modi teilen sich die gemeinsamen Komponenten `config.py` (Konfiguration) u
 
 **Indexer-Ablauf:**
 
-1. Paperless-ngx nimmt ein Dokument auf und stößt den Indexer an.
-2. Der Indexer ruft alle Dokumente samt Volltext paginiert über die REST-API ab.
+1. Paperless-ngx nimmt ein Dokument auf und meldet es per `post_consume.sh` an
+   `POST /index/{id}`; die API indexiert genau dieses Dokument.
+2. Der Volllauf (`main.py`, z. B. nächtlich) ruft alle Dokumente samt Volltext paginiert über die
+   REST-API ab.
 3. Neue/geänderte Dokumente werden in überlappende Chunks zerlegt, embeddet und als Points mit
    Metadaten in Qdrant gespeichert.
 4. Am Ende jedes Laufs findet ein Abgleich statt: Alle Qdrant-IDs, die nicht mehr in Paperless
@@ -61,11 +64,11 @@ Beide Modi teilen sich die gemeinsamen Komponenten `config.py` (Konfiguration) u
 ## Features
 
 - 🚀 **One-Shot-Indexer** – kein Polling-Loop, kein Dauerdienst; läuft, wenn er gebraucht wird.
-- 🌐 **Read-only API-Mode** – Flask-Service mit `/health`, `/search`, `/document/{id}`.
+- 🌐 **API-Mode** – Flask-Service mit `/health`, `/search`, `/document/{id}` und `/index/{id}`.
 - 🔁 **Inkrementelle Indexierung** – Änderungserkennung per SHA-256-`content_hash`; unveränderte Dokumente werden übersprungen.
 - 🗑️ **Lösch-Synchronisation** – in Paperless gelöschte Dokumente werden automatisch aus Qdrant entfernt.
 - 🔎 **Vector- & Hybrid-Suche** – rein semantisch oder kombiniert mit Volltext-Filter.
-- 🔐 **API_KEY-Authentifizierung** – optionaler Schutz der Endpunkte per `X-API-Key`-Header.
+- 🔐 **Schlüssel-Pflicht** – `/search` und `/document` nur mit `API_KEY`, `/index` mit eigenem `INDEX_API_KEY`.
 - ♻️ **Idempotent** – deterministische Point-IDs (`uuid5`), wiederholte Läufe erzeugen keine Duplikate.
 - ✂️ **Recursive Split Chunking (Absatz → Satz → Wort)** – Text wird hierarchisch an natürlichen Grenzen mit konfigurierbarer Überlappung geteilt.
 - 🔌 **OpenAI-kompatible Embeddings** – funktioniert mit Ollama, LocalAI, LM Studio & Co.
@@ -85,46 +88,49 @@ Beide Modi teilen sich die gemeinsamen Komponenten `config.py` (Konfiguration) u
 - **Docker** & **Docker Compose**.
 
 > ℹ️ Die Dimension der Vektoren (`VECTOR_SIZE`) muss zum verwendeten Embedding-Modell passen
-> (z. B. `768` für `nomic-embed-text`, `1024` für `bge-m3`).
+> (z. B. `768` für `embeddinggemma-2` oder `nomic-embed-text`, `1024` für `bge-m3`). Weicht sie ab,
+> bricht der Indexer mit einer klaren Fehlermeldung ab.
+
+### Empfohlenes Modell: EmbeddingGemma 2
+
+[EmbeddingGemma 2](https://huggingface.co/google/embeddinggemma-2) (Google, Apache 2.0) hat
+270 Mio. Parameter für Text, 768 Dimensionen, 8k Token Kontext und deckt über 100 Sprachen ab,
+darunter Deutsch. Es erwartet Aufgaben-Präfixe, die über `EMBEDDING_QUERY_TEMPLATE` und
+`EMBEDDING_DOCUMENT_TEMPLATE` gesetzt werden (siehe `.env.example`).
+
+Bereitstellen z. B. mit llama.cpp und dem GGUF von `ggml-org/embeddinggemma-2-GGUF`:
+
+```bash
+llama-server --model embeddinggemma-2-BF16.gguf --embeddings --alias embeddinggemma-2 \
+  --ctx-size 8192 --batch-size 8192 --ubatch-size 8192 --n-gpu-layers 99 --port 8080
+```
+
+> ⚠️ Ollama führt EmbeddingGemma 2 über MLX aus. Auf älteren NVIDIA-GPUs (z. B. Pascal) steht
+> MLX nicht zur Verfügung; llama.cpp läuft dort.
+
+Beim Wechsel des Modells eine **neue** `QDRANT_COLLECTION` verwenden und den Indexer einmal
+vollständig laufen lassen; Vektoren verschiedener Modelle sind nicht vergleichbar.
 
 ## Schnellstart
 
 ### 1. `.env`-Datei anlegen
 
-Lege im Projektverzeichnis eine Datei `.env` an (sie ist per `.gitignore` von der Versionskontrolle
-ausgeschlossen, da sie Secrets enthält):
-
-```dotenv
-# --- Paperless-ngx ---
-PAPERLESS_URL=http://paperless:8000
-PAPERLESS_TOKEN=dein_paperless_api_token
-
-# --- Embedding-Service (OpenAI-kompatibel, Basis-URL ohne /v1/embeddings) ---
-EMBEDDING_URL=http://embedding:8080
-EMBEDDING_MODEL=nomic-embed-text
-VECTOR_SIZE=768
-
-# --- Qdrant ---
-QDRANT_URL=http://qdrant:6333
-QDRANT_COLLECTION=paperless
-
-# --- Chunking ---
-CHUNK_SIZE=800
-CHUNK_OVERLAP=150
-
-# --- Logging ---
-LOG_LEVEL=INFO
-
-# --- API-Mode (optional) ---
-API_ENABLED=true
-API_HOST=0.0.0.0
-API_PORT=8080
-API_KEY=dein_api_key
-SEARCH_MODE=vector
+```bash
+cp .env.example .env
 ```
 
-Damit `docker compose` die Werte lädt, referenziere die Datei in der `docker-compose.yaml`
-(`env_file: .env`) oder übergib sie per `--env-file`.
+Werte in `.env` eintragen, insbesondere `PAPERLESS_TOKEN`, `API_KEY` und `INDEX_API_KEY`.
+Die Datei ist per `.gitignore` ausgeschlossen. **Schlüssel gehören nie in die
+`docker-compose.yaml`** – sie lädt alle Werte per `env_file: .env`.
+
+Schlüssel erzeugen:
+
+```bash
+python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+```
+
+Eigene Anpassungen an der Compose-Datei (z. B. `network_mode: host`) gehören in eine
+`docker-compose.override.yaml`; auch sie ist ausgeschlossen.
 
 ### 2. Indexer einmalig ausführen
 
@@ -153,6 +159,8 @@ docker compose up -d api
 | `EMBEDDING_URL`     | Basis-URL des OpenAI-kompatiblen Embedding-Dienstes (Pfad `/v1/embeddings` wird angehängt) | `http://embedding:8080`   |
 | `EMBEDDING_MODEL`   | Modellname, wird im Embedding-Request mitgeschickt                        | *(leer)*                                |
 | `VECTOR_SIZE`       | Dimension der Embedding-Vektoren (muss zum Modell passen)                 | `1024`                                  |
+| `EMBEDDING_QUERY_TEMPLATE` | Vorlage für Suchanfragen, `{text}` = Anfrage                       | `{text}`                                |
+| `EMBEDDING_DOCUMENT_TEMPLATE` | Vorlage für Chunks, `{title}` = Dokumenttitel, `{text}` = Chunk  | `{text}`                                |
 | `QDRANT_URL`        | Basis-URL der Qdrant-Instanz                                              | `http://qdrant:6333`                    |
 | `QDRANT_COLLECTION` | Name der Qdrant-Collection (wird bei Bedarf automatisch angelegt)         | `paperless`                             |
 | `CHUNK_SIZE`        | Maximale Chunk-Größe in Zeichen (Recursive Split)                         | `800`                                   |
@@ -166,7 +174,9 @@ docker compose up -d api
 | `API_ENABLED`  | Schalter für den API-Mode (`true`/`false`)                                    | `false`   |
 | `API_HOST`     | Bind-Adresse des HTTP-Servers                                                 | `0.0.0.0` |
 | `API_PORT`     | Port des HTTP-Servers                                                         | `8080`    |
-| `API_KEY`      | Optionaler API-Schlüssel; leer/nicht gesetzt = keine Authentifizierung        | *(leer)*  |
+| `API_KEY`      | Schlüssel für `/search` und `/document`. **Pflicht** – ohne ihn startet die API nicht | *(leer)*  |
+| `API_ALLOW_NO_AUTH` | `true` erlaubt den Start ohne `API_KEY` (nur für isolierte Testumgebungen) | `false` |
+| `INDEX_API_KEY` | Eigener Schlüssel für `POST /index/{id}`; leer = Endpunkt abgeschaltet       | *(leer)*  |
 | `SEARCH_MODE`  | Standard-Suchmodus (`vector` oder `hybrid`), falls im Request nicht angegeben  | `vector`  |
 
 ## Betriebsmodi
@@ -180,7 +190,7 @@ docker compose run --rm indexer
 Startet einen einmaligen Indexierungslauf und beendet sich danach. Ideal für Webhook- oder
 Cron-getriggerte Ausführung.
 
-### API (read-only HTTP-Service)
+### API (HTTP-Service)
 
 ```bash
 docker compose up -d api
@@ -191,14 +201,16 @@ Startet den Flask-Service dauerhaft im Hintergrund (`restart: unless-stopped`), 
 
 ## API-Endpunkte
 
-| Methode | Pfad                | Beschreibung                                             | Auth (falls `API_KEY` gesetzt) |
+| Methode | Pfad                | Beschreibung                                             | Auth                           |
 |---------|---------------------|---------------------------------------------------------|--------------------------------|
 | `GET`   | `/health`           | Health-Check, liefert `{"status": "ok"}`                | nein                           |
-| `POST`  | `/search`           | Suche über die indexierten Chunks (vector oder hybrid)  | ja                             |
-| `GET`   | `/document/{id}`    | Metadaten eines Dokuments anhand der Paperless-ID       | ja                             |
+| `POST`  | `/search`           | Suche über die indexierten Chunks (vector oder hybrid)  | `X-API-Key: <API_KEY>`         |
+| `GET`   | `/document/{id}`    | Metadaten eines Dokuments anhand der Paperless-ID       | `X-API-Key: <API_KEY>`         |
+| `POST`  | `/index/{id}`       | Dokument im Hintergrund (neu) indexieren, Antwort `202` | `X-API-Key: <INDEX_API_KEY>`   |
 
-Ist `API_KEY` gesetzt, müssen `/search` und `/document/{id}` den Header `X-API-Key` mitschicken.
-`/health` benötigt niemals eine Authentifizierung.
+`/search` und `/document/{id}` liefern Dokumentinhalte und verlangen darum immer den Header
+`X-API-Key`. `/index/{id}` hat einen eigenen Schlüssel, damit das Post-Consume-Script von
+Paperless nur indexieren, aber nicht suchen kann. `/health` benötigt keine Authentifizierung.
 
 ### `GET /health`
 
@@ -297,55 +309,33 @@ im Satz zerschnitten werden. Chunk-Größe und Überlappung sind über `CHUNK_SI
 
 ## Paperless Webhook-Integration
 
-Da der Indexer als One-Shot-Prozess läuft, lässt er sich direkt nach jeder Dokumenten-Aufnahme
-durch Paperless-ngx anstoßen. Es gibt zwei erprobte Varianten.
+Nach jedem aufgenommenen Dokument ruft Paperless das mitgelieferte `post_consume.sh` auf. Es
+meldet das Dokument per `curl` an `POST /index/{id}` der API, die es im Hintergrund indexiert.
+Paperless braucht dafür **keinen Docker-Socket** – ein eingebundener Socket gäbe einem
+kompromittierten Paperless Root-Rechte auf dem Host.
 
-### Variante A – Workflow-Trigger (Paperless-ngx ≥ 2.x)
+1. Das Repository in den Paperless-Container einbinden (nur lesend) und das Script eintragen:
 
-1. In Paperless öffnen: **Einstellungen → Workflows → Workflow hinzufügen**.
-2. Als **Trigger-Typ** `Dokument hinzugefügt` (bzw. `Consumption abgeschlossen`) wählen.
-3. Optional Filter setzen (z. B. nur bestimmte Tags/Korrespondenten indexieren).
-4. Eine **Aktion vom Typ „Webhook"** hinzufügen, die einen kleinen HTTP-Endpunkt aufruft,
-   der seinerseits den Indexer startet:
-
-   ```bash
-   docker compose run --rm indexer
+   ```yaml
+   volumes:
+     - /pfad/zu/paperless-vector-indexer:/scripts/indexer:ro
+   environment:
+     PAPERLESS_POST_CONSUME_SCRIPT: /scripts/indexer/post_consume.sh
+     INDEXER_URL: http://indexer-api:8080
+     INDEXER_API_KEY: ${INDEXER_API_KEY}   # gleicher Wert wie INDEX_API_KEY der API
    ```
 
-   Da Paperless-Workflows nur einen HTTP-Request auslösen, benötigst du dafür einen minimalen
-   Webhook-Empfänger (z. B. ein kleines Skript hinter einem Reverse-Proxy), der den obigen Befehl
-   ausführt. Der Indexer selbst braucht **keinen** dauerhaft laufenden Server, weil er ohnehin alle
-   Dokumente prüft und nur die Deltas verarbeitet.
+2. In der `.env` des Indexers `INDEX_API_KEY` setzen und die API neu starten.
 
-### Variante B – Post-consumption-Script
+Schlägt der Aufruf fehl, bricht das Script die Aufnahme nicht ab. Ein regelmäßiger Volllauf
+(`docker compose run --rm indexer`, z. B. nächtlich per Cron) holt verpasste Dokumente nach und
+gleicht Löschungen ab.
 
-Paperless kann nach jedem konsumierten Dokument ein Skript ausführen
-(`PAPERLESS_POST_CONSUME_SCRIPT`). Hinterlege ein kleines Wrapper-Skript, das den Indexer-Container
-startet:
+Einzelnes Dokument von Hand indexieren:
 
 ```bash
-#!/usr/bin/env bash
-# /usr/src/paperless/scripts/post_consume_indexer.sh
-set -euo pipefail
-docker compose \
-  -f /pfad/zu/paperless-vector-indexer/docker-compose.yaml \
-  --env-file /pfad/zu/paperless-vector-indexer/.env \
-  run --rm indexer
+docker compose run --rm indexer python main.py --doc 42
 ```
-
-Skript ausführbar machen und in der Paperless-Konfiguration eintragen
-(`docker-compose.env` bzw. `paperless.conf`):
-
-```bash
-chmod +x /usr/src/paperless/scripts/post_consume_indexer.sh
-```
-
-```dotenv
-PAPERLESS_POST_CONSUME_SCRIPT=/usr/src/paperless/scripts/post_consume_indexer.sh
-```
-
-> ⚠️ Damit das Skript den Docker-Host erreichen kann, muss der Docker-Socket im Paperless-Container
-> verfügbar sein (Mount von `/var/run/docker.sock`).
 
 ## Python Client
 
